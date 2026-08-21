@@ -51,6 +51,6 @@ jobs:
       - name: Send JAR to Discord via webhook
         if: success()
         run: |
-          curl -X POST "${{ secrets.DISCORD_WEBHOOK_URL }}" \
+          curl -X POST "${{ secrets.WEBHOOK_URL }}" \
             -F "payload_json={\"content\":\"✅ **Build complete!**\n**Version:** \`${{ steps.get_version.outputs.version }}\`\n**Branch:** \`${{ github.ref_name }}\`\n**Commit:** \`${{ github.sha }}\`\n**By:** ${{ github.actor }}\n**Run:** https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}" \
             -F "file=@${{ steps.find_jar.outputs.jar_path }};filename=${{ steps.find_jar.outputs.jar_name }}"
