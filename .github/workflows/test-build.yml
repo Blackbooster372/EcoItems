@@ -1,9 +1,10 @@
-name: Build Test
+name: Build
 
 on:
   push:
     branches:
-      - 'master'
+      - master
+  workflow_dispatch:
 
 jobs:
   build:
@@ -12,45 +13,40 @@ jobs:
     steps:
       - name: Checkout EcoItems
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
+          distribution: temurin
           java-version: 21
 
-      - name: Grant execute permission for gradlew
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Grant execute permission
         run: chmod +x ./gradlew
 
-      - name: Build with Gradle
-        run: ./gradlew build --no-daemon
+      - name: Build
+        run: ./gradlew clean build shadowJar --no-daemon
 
-      - name: Get version from gradle.properties
-        id: get_version
+      - name: Find JAR
+        id: jar
         run: |
-          VERSION=$(grep '^version=' gradle.properties | cut -d'=' -f2)
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-
-      - name: Find built JAR
-        id: find_jar
-        run: |
-          JAR_PATH=$(find ./build/libs -maxdepth 1 -name "EcoItems*.jar" \
-            ! -name "*-sources.jar" \
-            ! -name "*-javadoc.jar" | head -n 1)
+          JAR_PATH=$(find ./bin -type f -name "*.jar" | head -n 1)
 
           if [ -z "$JAR_PATH" ]; then
-            echo "EcoItems JAR not found"
+            echo "No JAR found in bin/"
+            find . -type f -name "*.jar"
             exit 1
           fi
 
-          echo "jar_path=$JAR_PATH" >> $GITHUB_OUTPUT
-          echo "jar_name=$(basename $JAR_PATH)" >> $GITHUB_OUTPUT
+          echo "path=$JAR_PATH" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$JAR_PATH")" >> "$GITHUB_OUTPUT"
 
-      - name: Send JAR to Discord via webhook
-        if: success()
+      - name: Send JAR to Discord
+        env:
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
         run: |
-          curl -X POST "${{ secrets.WEBHOOK_URL }}" \
-            -F "payload_json={\"content\":\"✅ **Build complete!**\n**Version:** \`${{ steps.get_version.outputs.version }}\`\n**Branch:** \`${{ github.ref_name }}\`\n**Commit:** \`${{ github.sha }}\`\n**By:** ${{ github.actor }}\n**Run:** https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}" \
-            -F "file=@${{ steps.find_jar.outputs.jar_path }};filename=${{ steps.find_jar.outputs.jar_name }}"
+          curl -fsS -X POST "$WEBHOOK_URL" \
+            -F "payload_json={\"content\":\"✅ **Build complete!**\n**Version:** \`${{ github.sha }}\`\n**Branch:** \`${{ github.ref_name }}\`\n**Commit:** \`${{ github.sha }}\`\"}" \
+            -F "file=@${{ steps.jar.outputs.path }};filename=${{ steps.jar.outputs.name }}"
