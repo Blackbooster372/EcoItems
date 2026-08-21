@@ -1,12 +1,12 @@
 name: Build & Deliver Plugin
 
-# Builds the plugin jar on every push to master (and manually via
+# Builds the plugin jar on every push to master/main (and manually via
 # workflow_dispatch), then uploads it to a webhook. Nothing is published as a
 # GitHub Release or Artifact — it only leaves via the webhook call.
 
 on:
   push:
-    branches: [ master ]
+    branches: [ master, main ]
   workflow_dispatch:
 
 jobs:
@@ -28,27 +28,47 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Build with Gradle
-        run: ./gradlew build --no-daemon
+      - name: Build with Gradle (try shadowJar, fallback to build)
+        run: |
+          set -euo pipefail
+          ./gradlew clean shadowJar --no-daemon || ./gradlew build --no-daemon
+
+      - name: Show build output (debug)
+        run: |
+          echo "Looking for jars under project build/libs dirs"
+          find . -path "*/build/libs/*.jar" -maxdepth 5 -print || true
 
       - name: Locate build jar
         id: jar
         run: |
-          JAR_PATH=$(find . -path "*/build/libs/*.jar" \
-            ! -name "*-sources.jar" ! -name "*-javadoc.jar" \
-            | sort -r | head -n 1)
+          set -euo pipefail
+          # Prefer shadow/fat jars ("*-all.jar", "*-shadow.jar"), then any other jar
+          JAR_PATH=$(find . -path "*/build/libs/*-all.jar" -print | sort -r | head -n 1)
+          if [ -z "$JAR_PATH" ]; then
+            JAR_PATH=$(find . -path "*/build/libs/*-shadow.jar" -print | sort -r | head -n 1)
+          fi
+          if [ -z "$JAR_PATH" ]; then
+            JAR_PATH=$(find . -path "*/build/libs/*.jar" \
+              ! -name "*-sources.jar" ! -name "*-javadoc.jar" -print | sort -r | head -n 1)
+          fi
           if [ -z "$JAR_PATH" ]; then
             echo "No jar found in build/libs" >&2
             exit 1
           fi
           echo "path=$JAR_PATH" >> "$GITHUB_OUTPUT"
           echo "filename=$(basename "$JAR_PATH")" >> "$GITHUB_OUTPUT"
+          echo "Found jar: $JAR_PATH"
 
       - name: Collect build metadata
         id: meta
         run: |
           echo "plugin_name=EcoItems" >> "$GITHUB_OUTPUT"
-          echo "version=$(grep -m1 '^version' gradle.properties | cut -d'=' -f2 | tr -d ' \r')" >> "$GITHUB_OUTPUT"
+          # Safe fallback if gradle.properties doesn't contain version
+          if [ -f gradle.properties ]; then
+            VERSION=$(grep -m1 '^version' gradle.properties | cut -d'=' -f2 | tr -d ' \r' || true)
+          fi
+          VERSION=${VERSION:-unknown}
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
           echo "build_date=$(date -u +'%Y-%m-%d %H:%M UTC')" >> "$GITHUB_OUTPUT"
 
@@ -56,16 +76,23 @@ jobs:
         env:
           WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
         run: |
-          if [ -z "$WEBHOOK_URL" ]; then
+          set -euo pipefail
+
+          if [ -z "${WEBHOOK_URL:-}" ]; then
             echo "WEBHOOK_URL secret is not set" >&2
             exit 1
           fi
 
-          MESSAGE=$(cat <<EOF
-          {"content":"**${{ steps.meta.outputs.plugin_name }}** build\n> Version: \`${{ steps.meta.outputs.version }}\`\n> Commit: \`${{ steps.meta.outputs.commit }}\`\n> Built: ${{ steps.meta.outputs.build_date }}\n> File: \`${{ steps.jar.outputs.filename }}\`"}
-          EOF
-          )
+          echo "Preparing payload.json"
+          cat > payload.json <<EOF
+{
+  "content": "**${{ steps.meta.outputs.plugin_name }}** build\n> Version: \`${{ steps.meta.outputs.version }}\`\n> Commit: \`${{ steps.meta.outputs.commit }}\`\n> Built: ${{ steps.meta.outputs.build_date }}\n> File: \`${{ steps.jar.outputs.filename }}\`"
+}
+EOF
 
+          echo "Payload:" && cat payload.json
+
+          echo "Uploading jar to webhook: ${{ steps.jar.outputs.path }}"
           curl -sS -X POST "$WEBHOOK_URL" \
-            -F "payload_json=$MESSAGE" \
+            -F "payload_json=@payload.json;type=application/json" \
             -F "file=@${{ steps.jar.outputs.path }}"
